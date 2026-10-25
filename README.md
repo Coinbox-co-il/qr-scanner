@@ -1,12 +1,35 @@
-# QR Scanner
+# QR Scanner — Coinbox fork
 
-Javascript QR Code Scanner based on [Cosmo Wolfe's javascript port](https://github.com/cozmo/jsqr) of [Google's ZXing library](https://github.com/zxing/zxing).
+Maintained fork of [Nimiq's QR Scanner](https://github.com/nimiq/qr-scanner), using
+[Coinbox's fork of the existing JavaScript decoder](https://github.com/Coinbox-co-il/jsQR).
+Camera frames and image files are decoded locally in the browser. The public API,
+native `BarcodeDetector` path, color controls, and JavaScript worker are preserved.
+
+Builds and tests run locally on Node 26. GitHub Actions is disabled; this repository
+has no cloud test workflow or self-hosted runner requirement.
+
+```sh
+npm ci
+npm run check
+```
+
+`npm test` uses the installed Google Chrome through Playwright. It does not install
+browsers. An anonymous local fixture exercises decoding and camera lifecycle
+without signing into an account or contacting Coinbox services.
+
+The decoder release is pinned in `devDependencies` and bundled at build time.
+The released scanner has no runtime npm dependencies and requires no WASM or CDN.
+Locally built npm tarballs are published as GitHub release assets. Consumers use
+those tarballs without installing or running the development toolchain.
+
+Upstream baseline: `nimiq/qr-scanner@abcfe1bce2703721408d8ce7ebde94a359998506`.
+Upstream changes are reviewed through Coinbox's manual Patch Tuesday procedure.
 
 In this library, several improvements have been applied over the original port:
 
 - Web cam scanning support out of the box
 - Uses the browser's native [BarcodeDetector](https://web.dev/shape-detection/) [if available](https://github.com/WICG/shape-detection-api#overview)
-- Lightweight: ~59.3 kB (~16.3 kB gzipped) minified with Google's closure compiler. If the native `BarcodeDetector` is available, only ~15.3 kB (~5.6 kB gzipped) are loaded.
+- Lightweight: about 17 kB gzipped for the API and worker together; the worker is loaded only when native detection is unavailable. Built with esbuild.
 - Improved performance and reduced memory footprint.
 - Runs in a WebWorker which keeps the main / UI thread responsive.
 - Can be configured for better performance on colored QR codes.
@@ -27,11 +50,11 @@ See [https://nimiq.github.io/qr-scanner/demo/](https://nimiq.github.io/qr-scanne
 
 To install via npm:
 ```bash
-npm install --save qr-scanner
+npm install --save qr-scanner@https://github.com/Coinbox-co-il/qr-scanner/releases/download/v1.5.0/coinbox-co-il-qr-scanner-1.5.0.tgz
 ```
 To install via yarn:
 ```bash
-yarn add qr-scanner
+yarn add qr-scanner@https://github.com/Coinbox-co-il/qr-scanner/releases/download/v1.5.0/coinbox-co-il-qr-scanner-1.5.0.tgz
 ```
 Or simply copy `qr-scanner.min.js` and `qr-scanner-worker.min.js` to your project.
 
@@ -254,10 +277,10 @@ the /src folder. NodeJs is required for building.
 
 Install required build packages:
 ```batch
-yarn
+npm ci
 ```
 
 Building:
 ```batch
-yarn build
+npm run build
 ```

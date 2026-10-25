@@ -1,13 +1,15 @@
 {
   "compilerOptions": {
-    "module": "esnext",
-    "target": "esnext",
+    "target": "ES2017",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "strict": true,
-    "moduleResolution": "node",
-    "noImplicitAny": true,
     "noImplicitReturns": true,
-    "noImplicitThis": true,
-    "noEmitOnError": true
-  }
+    "declaration": true,
+    "declarationDir": "types",
+    "types": [],
+    "rootDir": "src"
+  },
+  "include": ["src/qr-scanner.ts", "src/worker.ts", "src/assets.d.ts"]
 }
-

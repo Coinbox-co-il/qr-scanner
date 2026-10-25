@@ -70,6 +70,8 @@ class QrScanner {
     private _paused: boolean = false;
     private _flashOn: boolean = false;
     private _destroyed: boolean = false;
+    private _cameraGeneration = 0;
+    private _scanGeneration = 0;
 
     constructor(
         video: HTMLVideoElement,
@@ -264,6 +266,8 @@ class QrScanner {
         window.addEventListener('resize', this._updateOverlay);
 
         this._qrEnginePromise = QrScanner.createQrEngine();
+        // start()/scanImage() report initialization failures to their callers.
+        void this._qrEnginePromise.catch(() => {});
     }
 
     async hasFlash(): Promise<boolean> {
@@ -334,8 +338,8 @@ class QrScanner {
 
         this._destroyed = true;
         this._flashOn = false;
-        this.stop(); // sets this._paused = true and this._active = false
-        QrScanner._postWorkerMessage(this._qrEnginePromise, 'close');
+        this.stop();
+        void QrScanner._postWorkerMessage(this._qrEnginePromise, 'close');
     }
 
     async start(): Promise<void> {
@@ -350,22 +354,36 @@ class QrScanner {
         this._active = true;
         if (document.hidden) return; // camera will be started as soon as tab is in foreground
         this._paused = false;
-        if (this.$video.srcObject) {
-            // camera stream already/still set
-            await this.$video.play();
-            return;
-        }
-
+        const generation = ++this._cameraGeneration;
+        let stream: MediaStream | undefined;
+        const releaseStream = () => {
+            if (!stream) return;
+            // A later start can reuse this same stream while an earlier play() is pending.
+            if (generation !== this._cameraGeneration && this._active && !this._paused
+                && this.$video.srcObject === stream) return;
+            QrScanner._stopVideoStream(stream);
+            if (this.$video.srcObject === stream) this.$video.srcObject = null;
+        };
         try {
-            const { stream, facingMode } = await this._getCameraStream();
-            if (!this._active || this._paused) {
-                // was stopped in the meantime
-                QrScanner._stopVideoStream(stream);
+            await this._qrEnginePromise;
+            if (generation !== this._cameraGeneration || this._destroyed) return;
+            if (this.$video.srcObject instanceof MediaStream) {
+                stream = this.$video.srcObject;
+            } else {
+                const camera = await this._getCameraStream();
+                stream = camera.stream;
+                if (generation !== this._cameraGeneration || this._destroyed) {
+                    releaseStream();
+                    return;
+                }
+                this._setVideoMirror(camera.facingMode);
+                this.$video.srcObject = stream;
+            }
+            await this.$video.play();
+            if (generation !== this._cameraGeneration || this._destroyed) {
+                releaseStream();
                 return;
             }
-            this._setVideoMirror(facingMode);
-            this.$video.srcObject = stream;
-            await this.$video.play();
 
             // Restart the flash if it was previously on
             if (this._flashOn) {
@@ -373,20 +391,22 @@ class QrScanner {
                 this.turnFlashOn().catch(() => {});
             }
         } catch (e) {
-            if (this._paused) return;
+            releaseStream();
+            if (generation !== this._cameraGeneration || this._destroyed) return;
             this._active = false;
             throw e;
         }
     }
 
     stop(): void {
-        this.pause();
+        void this.pause(true);
         this._active = false;
     }
 
     async pause(stopStreamImmediately = false): Promise<boolean> {
         this._paused = true;
-        if (!this._active) return true;
+        ++this._cameraGeneration;
+        ++this._scanGeneration;
         this.$video.pause();
 
         if (this.$overlay) {
@@ -489,13 +509,14 @@ class QrScanner {
         }
 
         const gotExternalEngine = !!qrEngine;
+        const enginePromise = Promise.resolve(qrEngine || QrScanner.createQrEngine());
 
         try {
             let image: HTMLImageElement | HTMLVideoElement | HTMLCanvasElement | OffscreenCanvas | ImageBitmap
                 | SVGImageElement;
             let canvasContext: CanvasRenderingContext2D;
             [qrEngine, image] = await Promise.all([
-                qrEngine || QrScanner.createQrEngine(),
+                enginePromise,
                 QrScanner._loadImage(imageOrFileOrBlobOrUrl),
             ]);
             [canvas, canvasContext] = QrScanner._drawToCanvas(image, scanRegion, canvas, disallowCanvasResizing);
@@ -519,7 +540,9 @@ class QrScanner {
                         qrEngineWorker.removeEventListener('message', onMessage);
                         qrEngineWorker.removeEventListener('error', onError);
                         clearTimeout(timeout);
-                        if (event.data.data !== null) {
+                        if (event.data.type === 'qrError') {
+                            reject(new Error('Scanner error: ' + event.data.error));
+                        } else if (event.data.data !== null) {
                             resolve({
                                 data: event.data.data,
                                 cornerPoints: QrScanner._convertPoints(event.data.cornerPoints, scanRegion),
@@ -547,11 +570,13 @@ class QrScanner {
                     );
                 });
             } else {
-                detailedScanResult = await Promise.race([
-                    new Promise<QrScanner.ScanResult>((resolve, reject) => window.setTimeout(
+                let timeout: ReturnType<typeof setTimeout> | undefined;
+                try {
+                    detailedScanResult = await Promise.race([
+                    new Promise<QrScanner.ScanResult>((resolve, reject) => { timeout = window.setTimeout(
                         () => reject('Scanner error: timeout'),
                         10000,
-                    )),
+                    ); }),
                     (async (): Promise<QrScanner.ScanResult> => {
                         try {
                             const [scanResult] = await qrEngine.detect(canvas!);
@@ -583,7 +608,8 @@ class QrScanner {
                             throw `Scanner error: ${errorMessage}`;
                         }
                     })(),
-                ]);
+                    ]);
+                } finally { clearTimeout(timeout); }
             }
             return returnDetailedScanResult ? detailedScanResult : detailedScanResult.data;
         } catch (e) {
@@ -595,7 +621,8 @@ class QrScanner {
             return returnDetailedScanResult ? detailedScanResult : detailedScanResult.data;
         } finally {
             if (!gotExternalEngine) {
-                QrScanner._postWorkerMessage(qrEngine!, 'close');
+                // The image can fail before engine creation finishes. Still release that engine.
+                void enginePromise.then(engine => QrScanner._postWorkerMessageSync(engine, 'close'), () => {});
             }
         }
     }
@@ -624,14 +651,16 @@ class QrScanner {
             console.warn('Specifying a worker path is not required and not supported anymore.');
         }
 
-        // @ts-ignore no types defined for import
-        const createWorker = () => (import('./qr-scanner-worker.min.js') as Promise<{ createWorker: () => Worker }>)
+        const createWorker = () => import('./qr-scanner-worker.min.js')
             .then((module) => module.createWorker());
 
-        const useBarcodeDetector = !QrScanner._disableBarcodeDetector
-            && 'BarcodeDetector' in window
-            && BarcodeDetector.getSupportedFormats
-            && (await BarcodeDetector.getSupportedFormats()).includes('qr_code');
+        let useBarcodeDetector = false;
+        try {
+            useBarcodeDetector = !QrScanner._disableBarcodeDetector
+                && typeof BarcodeDetector !== 'undefined'
+                && typeof BarcodeDetector.getSupportedFormats === 'function'
+                && (await BarcodeDetector.getSupportedFormats()).includes('qr_code');
+        } catch { /* Unsupported or disabled native service: use the software decoder. */ }
 
         if (!useBarcodeDetector) return createWorker();
 
@@ -653,7 +682,8 @@ class QrScanner {
                 .catch(() => true);
         if (isChromiumOnMacWithArmVentura) return createWorker();
 
-        return new BarcodeDetector({ formats: ['qr_code'] });
+        try { return new BarcodeDetector({ formats: ['qr_code'] }); }
+        catch { return createWorker(); }
     }
 
     private _onPlay(): void {
@@ -674,7 +704,7 @@ class QrScanner {
         if (document.hidden) {
             this.pause();
         } else if (this._active) {
-            this.start();
+            void this.start().catch(error => this._onDecodeError(error));
         }
     }
 
@@ -792,6 +822,7 @@ class QrScanner {
 
     private _scanFrame(): void {
         if (!this._active || this.$video.paused || this.$video.ended) return;
+        const generation = this._scanGeneration;
         // If requestVideoFrameCallback is available use that to avoid unnecessary scans on the same frame as the
         // camera's framerate can be lower than the screen refresh rate and this._maxScansPerSecond, especially in dark
         // settings where the exposure time is longer. Both, requestVideoFrameCallback and requestAnimationFrame are not
@@ -801,6 +832,7 @@ class QrScanner {
             ? this.$video.requestVideoFrameCallback.bind(this.$video)
             : requestAnimationFrame;
         requestFrame(async () => {
+            if (!this._active || this._paused || generation !== this._scanGeneration) return;
             if (this.$video.readyState <= 1) {
                 // Skip scans until the video is ready as drawImage() only works correctly on a video with readyState
                 // > 1, see https://developer.mozilla.org/en-US/docs/Web/API/CanvasRenderingContext2D/drawImage#Notes.
@@ -815,6 +847,7 @@ class QrScanner {
             if (timeSinceLastScan < minimumTimeBetweenScans) {
                 await new Promise((resolve) => setTimeout(resolve, minimumTimeBetweenScans - timeSinceLastScan));
             }
+            if (!this._active || this._paused || generation !== this._scanGeneration) return;
             // console.log('Scan rate:', Math.round(1000 / (Date.now() - this._lastScanTimestamp)));
             this._lastScanTimestamp = Date.now();
 
@@ -826,10 +859,11 @@ class QrScanner {
                     canvas: this.$canvas,
                 });
             } catch (error) {
-                if (!this._active) return;
+                if (!this._active || this._paused || generation !== this._scanGeneration) return;
                 this._onDecodeError(error as Error | string);
             }
 
+            if (!this._active || this._paused || generation !== this._scanGeneration) return;
             if (QrScanner._disableBarcodeDetector && !(await this._qrEnginePromise instanceof Worker)) {
                 // replace the disabled BarcodeDetector
                 this._qrEnginePromise = QrScanner.createQrEngine();
@@ -904,7 +938,13 @@ class QrScanner {
                         )
                     );
                 return { stream, facingMode };
-            } catch (e) {}
+            } catch (error) {
+                // Another camera can satisfy a constraint or hardware-access failure.
+                if (!(error instanceof DOMException)
+                    || !['OverconstrainedError', 'NotFoundError', 'ConstraintNotSatisfiedError', 'NotReadableError'].includes(error.name)) {
+                    throw error;
+                }
+            }
         }
 
         throw 'Camera not found.';
@@ -1028,7 +1068,7 @@ class QrScanner {
             const listener = (event: ErrorEvent | Event) => {
                 image.removeEventListener('load', listener);
                 image.removeEventListener('error', listener);
-                if (event instanceof ErrorEvent) {
+                if (event.type === 'error') {
                     reject('Image load error');
                 } else {
                     resolve();
@@ -1045,7 +1085,9 @@ class QrScanner {
         data?: any,
         transfer?: Transferable[],
     ): Promise<number> {
-        return QrScanner._postWorkerMessageSync(await qrEngineOrQrEnginePromise, type, data, transfer);
+        try {
+            return QrScanner._postWorkerMessageSync(await qrEngineOrQrEnginePromise, type, data, transfer);
+        } catch { return -1; } // Initialization failures are reported by start()/scanImage().
     }
 
     // sync version of _postWorkerMessage without performance overhead of async functions
@@ -1056,12 +1098,13 @@ class QrScanner {
         transfer?: Transferable[],
     ): number {
         if (!(qrEngine instanceof Worker)) return -1;
+        if (type === 'close') { qrEngine.terminate(); return -1; }
         const id = QrScanner._workerMessageId++;
         qrEngine.postMessage({
             id,
             type,
             data,
-        }, transfer);
+        }, { transfer });
         return id;
     }
 }
