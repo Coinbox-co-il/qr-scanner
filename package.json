@@ -1,6 +1,6 @@
 {
   "name": "@coinbox-co-il/qr-scanner",
-  "version": "1.5.0",
+  "version": "1.5.1",
   "description": "Browser QR scanner with native detection and a local JavaScript decoder worker",
   "main": "qr-scanner.cjs",
   "module": "qr-scanner.min.js",
@@ -27,6 +27,6 @@
     "esbuild": "0.28.2",
     "qrcode-generator": "2.0.4",
     "typescript": "7.0.2",
-    "jsqr-es6": "https://github.com/Coinbox-co-il/jsQR/releases/download/v1.4.2/coinbox-co-il-jsqr-1.4.2.tgz"
+    "jsqr-es6": "https://github.com/Coinbox-co-il/jsQR/releases/download/v1.4.3/coinbox-co-il-jsqr-1.4.3.tgz"
   }
 }
