@@ -10,7 +10,7 @@ running in a worker as the fallback. The release has no runtime npm dependencies
 Install the locally built GitHub release under the existing package name:
 
 ```bash
-npm install --save qr-scanner@https://github.com/Coinbox-co-il/qr-scanner/releases/download/v1.5.1/coinbox-co-il-qr-scanner-1.5.1.tgz
+npm install --save qr-scanner@https://github.com/Coinbox-co-il/qr-scanner/releases/download/v1.5.2/coinbox-co-il-qr-scanner-1.5.2.tgz
 ```
 Import it through your bundler:
 

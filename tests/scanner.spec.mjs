@@ -31,6 +31,11 @@ test.beforeEach(async ({ page }) => {
     });
     await page.goto('https://qr.test/');
     await page.evaluate(async fixtures => {
+        // Native-detector fixtures must not inherit the host's Apple Silicon fallback.
+        Object.defineProperty(navigator, 'userAgentData', { configurable: true, value: {
+            brands: [{ brand: 'Chromium', version: '157' }], platform: 'Linux',
+            getHighEntropyValues: async () => ({ architecture: 'x86', platformVersion: '6' }),
+        } });
         delete window.BarcodeDetector;
         window.QrScanner = (await import('/qr-scanner.min.js')).default;
         window.fixtures = fixtures;
@@ -131,6 +136,23 @@ test('failing native capability detection falls back to real software decoding',
         return (await QrScanner.scanImage(makeQr(), { returnDetailedScanResult: true })).data;
     });
     expect(result).toBe(payloads[0]);
+});
+
+test('Apple Silicon macOS uses the software decoder even when native detection is advertised', async ({ page }) => {
+    const result = await page.evaluate(async () => {
+        Object.defineProperty(navigator, 'userAgentData', { configurable: true, value: {
+            brands: [{ brand: 'Chromium', version: '157' }], platform: 'macOS',
+            getHighEntropyValues: async () => ({ architecture: 'arm', platformVersion: '13' }),
+        } });
+        let nativeCalls = 0;
+        window.BarcodeDetector = class {
+            static async getSupportedFormats() { return ['qr_code']; }
+            async detect() { nativeCalls++; return []; }
+        };
+        const result = await QrScanner.scanImage(makeQr(), { returnDetailedScanResult: true });
+        return { data: result.data, nativeCalls };
+    });
+    expect(result).toEqual({ data: payloads[0], nativeCalls: 0 });
 });
 
 test('native service failure falls back to real software decoding', async ({ page }) => {
